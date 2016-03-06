@@ -97,9 +97,8 @@ int main(int argc, char* argv[])
     boost::mpi::environment env(argc,argv);
     boost::mpi::communicator comm;
 
-    print_section("Hubbard nxn");
+    print_section("Anderson model ED");
     
-    int wf_max, wb_max;
     RealType e0, U, beta;
     bool calc_gf, calc_2pgf;
     size_t L;
@@ -116,8 +115,6 @@ int main(int argc, char* argv[])
     e0 = p["ed"];
     boost::tie(beta, calc_gf, calc_2pgf) = boost::make_tuple(  
         p["beta"], p["calc_gf"].as<int>(), p["calc_2pgf"].as<int>());
-    //boost::tie(wf_max, wb_max) = boost::make_tuple(wn_arg.getValue(), wb_arg.getValue());
-    //boost::tie(eta, hbw, step) = boost::make_tuple(eta_arg.getValue(), (hbw_arg.isSet()?hbw_arg.getValue():2.*U), step_arg.getValue());
     calc_gf = calc_gf || calc_2pgf;
 
     if (p.exists("levels")) { 
