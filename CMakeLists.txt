@@ -1,7 +1,6 @@
 cmake_minimum_required (VERSION 2.8.12)
 project (pomerol_execs CXX)
 
-
 # Disable build in source
 if (${CMAKE_BINARY_DIR} STREQUAL ${CMAKE_SOURCE_DIR})
     message(FATAL_ERROR "In source builds are disabled. Please use a separate build directory.")
@@ -31,6 +30,7 @@ include_directories(${GFTOOLS_INCLUDE_DIR})
 
 set (execs anderson)
 foreach (exec ${execs})
-    add_executable(${exec} ${exec}.cpp)
-    target_link_libraries(${exec} ${pomerol_LIBRARIES})
+    set (exec_name "${exec}.pomerol")
+    add_executable(${exec_name} ${exec}.cpp)
+    install ( TARGETS ${exec_name} DESTINATION bin )
 endforeach (exec)
