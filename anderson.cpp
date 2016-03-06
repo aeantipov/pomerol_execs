@@ -25,15 +25,11 @@
 ** \author Andrey Antipov (Andrey.E.Antipov@gmail.com)
 */
 
-#pragma clang diagnostic ignored "-Wc++11-extensions"
-#pragma clang diagnostic ignored "-Wgnu"
-
 #include <boost/serialization/complex.hpp>
 #include <boost/serialization/vector.hpp>
 #include <boost/archive/text_oarchive.hpp>
 #include <boost/archive/text_iarchive.hpp>
 #include <boost/lexical_cast.hpp>
-
 
 #include <string>
 #include <iostream>
@@ -45,6 +41,8 @@
 
 #include <pomerol.h>
 #include "mpi_dispatcher/mpi_dispatcher.hpp"
+
+#include <alps/params.hpp>
 
 using namespace Pomerol;
 
@@ -67,6 +65,35 @@ ComplexType chi_bfreq_f(T const& chi, double W, double w1, double w2) {
 };
 int job_to_bfreq_index(int job, int wbmax) { return -wbmax + job+1; }
 
+// cmdline parser
+alps::params cmdline_params(int argc, char* argv[]) 
+{
+    alps::params p(argc, (const char**)argv);
+    p.description("Full-ED of the Anderson model");
+    p.define <std::vector<double> > ("level,l", "energy levels of the bath sites");
+    p.define <std::vector<double> > ("hopping,t", "hopping to the bath sites");
+
+    p.define<double> ( "U", 10.0, "Value of U");
+    p.define<double> ( "beta,b", 1, "Value of inverse temperature");
+    p.define<double> ( "e", 0.0, "Value of energy level of the impurity");
+
+    p.define<int>("calcgf", false, "Calculate Green's functions");
+    p.define<int>("calcgf", false, "Calculate 2-particle Green's functions");
+
+    p.define<double>("reducetol", 1e-5, "Energy resonance resolution in 2pgf");
+    p.define<double>("coefftol",  1e-12, "Tolerance on nominators in 2pgf");
+    p.define<double>("eta", 0.05, "Offset from the real axis for Green's function calculation");
+
+        //cmd.xorAdd(beta_arg,T_arg);
+        //TCLAP::ValueArg<size_t> wn_arg("","wf","Number of positive fermionic Matsubara Freqs",false,64,"int",cmd);
+        //TCLAP::ValueArg<size_t> wb_arg("","wb","Number of positive bosonic Matsubara Freqs",false,1,"int",cmd);
+        //TCLAP::ValueArg<RealType> eta_arg("","eta","Offset from the real axis for Green's function calculation",false,0.05,"RealType",cmd);
+        //TCLAP::ValueArg<RealType> hbw_arg("D","hbw","Half-bandwidth. Default = U",false,0.0,"RealType",cmd);
+        //TCLAP::ValueArg<RealType> step_arg("","step","Step on a real axis. Default : 0.01",false,0.01,"RealType",cmd);
+
+    return p;
+}
+
 int main(int argc, char* argv[])
 {
     boost::mpi::environment env(argc,argv);
@@ -85,6 +112,10 @@ int main(int argc, char* argv[])
     std::vector<double> hoppings;
 
     try { // command line parser
+
+        alps::params p = cmdline_params(argc, argv);
+
+
         TCLAP::CmdLine cmd("Hubbard nxn diag", ' ', "");
         TCLAP::ValueArg<RealType> U_arg("U","U","Value of U",true,10.0,"RealType",cmd);
         TCLAP::ValueArg<RealType> beta_arg("b","beta","Inverse temperature",true,100.,"RealType");
