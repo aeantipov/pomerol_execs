@@ -43,46 +43,44 @@
 #include "mpi_dispatcher/mpi_dispatcher.hpp"
 
 #include <alps/params.hpp>
+#undef DEBUG
+#include <gftools.hpp>
 
+void print_section (const std::string& str, boost::mpi::communicator comm = boost::mpi::communicator());
+
+//boost::mpi::environment env;
 using namespace Pomerol;
+using gftools::grid_object;
+using gftools::tools::is_float_equal;
+using gftools::enum_grid;
+using gftools::FMatsubara;
+using gftools::BMatsubara;
 
-extern boost::mpi::environment env;
-boost::mpi::communicator comm;
 
-/* Auxiliary routines - implemented in the bottom. */
-bool compare(ComplexType a, ComplexType b);
-void print_section (const std::string& str);
-template <typename F1, typename F2>
-    bool is_equal ( F1 x, F2 y, RealType tolerance = 1e-7);
-template <typename T1> void savetxt(std::string fname, T1 in);
-struct my_logic_error;
-double FMatsubara(int n, double beta){return M_PI/beta*(2.*n+1);}
-double BMatsubara(int n, double beta){return M_PI/beta*(2.*n);}
-
-template <typename T>
-ComplexType chi_bfreq_f(T const& chi, double W, double w1, double w2) { 
-    return chi(I*(W+w1), I*w2, I*w1); // this comes from Pomerol - see TwoParticleGF::operator()
-};
-int job_to_bfreq_index(int job, int wbmax) { return -wbmax + job+1; }
+#define mpi_cout if(!comm.rank()) std::cout 
 
 // cmdline parser
 alps::params cmdline_params(int argc, char* argv[]) 
 {
     alps::params p(argc, (const char**)argv);
     p.description("Full-ED of the Anderson model");
-    p.define <std::vector<double> > ("level,l", "energy levels of the bath sites");
-    p.define <std::vector<double> > ("hopping,t", "hopping to the bath sites");
+    p.define <std::vector<double> > ("levels", "energy levels of the bath sites");
+    p.define <std::vector<double> > ("hoppings", "hopping to the bath sites");
 
     p.define<double> ( "U", 10.0, "Value of U");
-    p.define<double> ( "beta,b", 1, "Value of inverse temperature");
-    p.define<double> ( "e", 0.0, "Value of energy level of the impurity");
+    p.define<double> ( "beta", 1, "Value of inverse temperature");
+    p.define<double> ( "ed", 0.0, "Value of energy level of the impurity");
 
-    p.define<int>("calcgf", false, "Calculate Green's functions");
-    p.define<int>("calcgf", false, "Calculate 2-particle Green's functions");
+    p.define<int>("calc_gf", false, "Calculate Green's functions");
+    p.define<int>("calc_2pgf", false, "Calculate 2-particle Green's functions");
 
-    p.define<double>("reducetol", 1e-5, "Energy resonance resolution in 2pgf");
-    p.define<double>("coefftol",  1e-12, "Tolerance on nominators in 2pgf");
-    p.define<double>("eta", 0.05, "Offset from the real axis for Green's function calculation");
+    //p.define<double>("eta", 0.05, "Offset from the real axis for Green's function calculation");
+
+    p.define<double>("2pgf.reduce_tol", 1e-5, "Energy resonance resolution in 2pgf");
+    p.define<double>("2pgf.coeff_tol",  1e-12, "Tolerance on nominators in 2pgf");
+    p.define<size_t>("2pgf.reduce_freq", 1e5, "How often to reduce terms in 2pgf");
+    p.define<double>("2pgf.multiterm_tol", 1e-6, "How often to reduce terms in 2pgf");
+    p.define<std::vector<size_t> >("2pgf.indices", "2pgf index combination");
 
         //cmd.xorAdd(beta_arg,T_arg);
         //TCLAP::ValueArg<size_t> wn_arg("","wf","Number of positive fermionic Matsubara Freqs",false,64,"int",cmd);
@@ -102,7 +100,7 @@ int main(int argc, char* argv[])
     print_section("Hubbard nxn");
     
     int wf_max, wb_max;
-    RealType e0, U, beta, reduce_tol, coeff_tol;
+    RealType e0, U, beta;
     bool calc_gf, calc_2pgf;
     size_t L;
 
@@ -111,52 +109,23 @@ int main(int argc, char* argv[])
     std::vector<double> levels;
     std::vector<double> hoppings;
 
-    try { // command line parser
+    alps::params p = cmdline_params(argc, argv);
+    if (p.help_requested(std::cerr)) { MPI_Finalize(); exit(1); };
 
-        alps::params p = cmdline_params(argc, argv);
+    U = p["U"];
+    e0 = p["ed"];
+    boost::tie(beta, calc_gf, calc_2pgf) = boost::make_tuple(  
+        p["beta"], p["calc_gf"].as<int>(), p["calc_2pgf"].as<int>());
+    //boost::tie(wf_max, wb_max) = boost::make_tuple(wn_arg.getValue(), wb_arg.getValue());
+    //boost::tie(eta, hbw, step) = boost::make_tuple(eta_arg.getValue(), (hbw_arg.isSet()?hbw_arg.getValue():2.*U), step_arg.getValue());
+    calc_gf = calc_gf || calc_2pgf;
 
+    if (p.exists("levels")) { 
+        levels = p["levels"].as<std::vector<double>>();
+        hoppings = p["hoppings"].as<std::vector<double>>();
+    }
 
-        TCLAP::CmdLine cmd("Hubbard nxn diag", ' ', "");
-        TCLAP::ValueArg<RealType> U_arg("U","U","Value of U",true,10.0,"RealType",cmd);
-        TCLAP::ValueArg<RealType> beta_arg("b","beta","Inverse temperature",true,100.,"RealType");
-        TCLAP::ValueArg<RealType> T_arg("T","T","Temperature",true,0.01,"RealType");
-        cmd.xorAdd(beta_arg,T_arg);
-
-        TCLAP::MultiArg<double> level_args("l", "level", "level on auxiliary site", false,"RealType", cmd );
-        TCLAP::MultiArg<double> hopping_args("t", "hopping", "hopping to an auxiliary site", false,"RealType", cmd );
-
-        TCLAP::ValueArg<size_t> wn_arg("","wf","Number of positive fermionic Matsubara Freqs",false,64,"int",cmd);
-        TCLAP::ValueArg<size_t> wb_arg("","wb","Number of positive bosonic Matsubara Freqs",false,1,"int",cmd);
-        TCLAP::SwitchArg gf_arg("","calcgf","Calculate Green's functions",cmd, false);
-        TCLAP::SwitchArg twopgf_arg("","calc2pgf","Calculate 2-particle Green's functions",cmd, false);
-        TCLAP::ValueArg<RealType> reduce_tol_arg("","reducetol","Energy resonance resolution in 2pgf",false,1e-5,"RealType",cmd);
-        TCLAP::ValueArg<RealType> coeff_tol_arg("","coefftol","Total weight tolerance",false,1e-12,"RealType",cmd);
-        TCLAP::ValueArg<RealType> e0_arg("e","e0","Energy level of the impurity",false,0.0,"RealType",cmd);
-
-        TCLAP::ValueArg<RealType> eta_arg("","eta","Offset from the real axis for Green's function calculation",false,0.05,"RealType",cmd);
-        TCLAP::ValueArg<RealType> hbw_arg("D","hbw","Half-bandwidth. Default = U",false,0.0,"RealType",cmd);
-        TCLAP::ValueArg<RealType> step_arg("","step","Step on a real axis. Default : 0.01",false,0.01,"RealType",cmd);
-
-        cmd.parse( argc, argv ); // parse arguments
- 
-        U = U_arg.getValue();
-        e0 = (e0_arg.isSet()?e0_arg.getValue():-U/2.0);
-        boost::tie(beta, calc_gf, calc_2pgf, reduce_tol, coeff_tol) = boost::make_tuple( beta_arg.getValue(), 
-            gf_arg.getValue(), twopgf_arg.getValue(), reduce_tol_arg.getValue(), coeff_tol_arg.getValue());
-        boost::tie(wf_max, wb_max) = boost::make_tuple(wn_arg.getValue(), wb_arg.getValue());
-        boost::tie(eta, hbw, step) = boost::make_tuple(eta_arg.getValue(), (hbw_arg.isSet()?hbw_arg.getValue():2.*U), step_arg.getValue());
-        calc_gf = calc_gf || calc_2pgf;
-
-        levels = level_args.getValue(); 
-        hoppings = hopping_args.getValue();
-
-        if (levels.size() != hoppings.size()) throw (std::logic_error("number of levels != number of hoppings"));
-        }
-    catch (TCLAP::ArgException &e)  // catch parsing exceptions
-        { std::cerr << "error: " << e.error() << " for arg " << e.argId() << std::endl; exit(1);}
-    catch (std::exception &e)  // catch standard exceptions
-        { std::cerr << "error: " << e.what() << std::endl; exit(1);}
-
+    if (levels.size() != hoppings.size()) throw (std::logic_error("number of levels != number of hoppings"));
 
     L = levels.size();
     INFO("Diagonalization of 1+" << L << " sites");
@@ -181,53 +150,72 @@ int main(int argc, char* argv[])
 
     int rank = comm.rank();
     if (!rank) {
-        INFO("Terms with 2 operators");
+        mpi_cout << "Terms with 2 operators" << std::endl;
         Lat.printTerms(2);
 
-        INFO("Terms with 4 operators");
+        mpi_cout << "Terms with 4 operators" << std::endl;
         Lat.printTerms(4);
         };
 
     IndexClassification IndexInfo(Lat.getSiteMap());
-    IndexInfo.prepare(false); // Create index space
+    // Create index space
+    IndexInfo.prepare(false); 
     if (!rank) { print_section("Indices"); IndexInfo.printIndices(); };
     int index_size = IndexInfo.getIndexSize();
 
     print_section("Matrix element storage");
     IndexHamiltonian Storage(&Lat,IndexInfo); 
-    Storage.prepare(); // Write down the Hamiltonian as a symbolic formula
+    // Write down the Hamiltonian as a symbolic formula
+    Storage.prepare(); 
     print_section("Terms");
     if (!rank) INFO(Storage);
 
     Symmetrizer Symm(IndexInfo, Storage);
-    Symm.compute(); // Find symmetries of the problem
+    // Find symmetries of the problem
+    Symm.compute(); 
 
-    StatesClassification S(IndexInfo,Symm); // Introduce Fock space and classify states to blocks
+    // Introduce Fock space and classify states to blocks
+    StatesClassification S(IndexInfo,Symm); 
     S.compute();
 
-    Hamiltonian H(IndexInfo, Storage, S); // Hamiltonian in the basis of Fock Space
-    H.prepare(); // enter the Hamiltonian matrices
-    H.compute(); // compute eigenvalues and eigenvectors
+    // Hamiltonian in the basis of Fock Space
+    Hamiltonian H(IndexInfo, Storage, S); 
+    // enter the Hamiltonian matrices
+    H.prepare(); 
+    // compute eigenvalues and eigenvectors
+    H.compute(); 
 
-    RealVectorType evals (H.getEigenValues());
-    std::sort(evals.data(), evals.data() + H.getEigenValues().size());
-    savetxt("spectrum.dat", evals); // dump eigenvalues
+    // Save spectrum
+    if (!rank) {
+        grid_object<double, enum_grid> evals1(enum_grid(0, S.getNumberOfStates()));
+        RealVectorType evals (H.getEigenValues());
+        std::sort(evals.data(), evals.data() + H.getEigenValues().size());
+        std::copy(evals.data(), evals.data() + S.getNumberOfStates(), evals1.data().data());
+        evals1.savetxt("spectrum.dat");
+    }
+    //savetxt("spectrum.dat", evals); // dump eigenvalues
 
     DensityMatrix rho(S,H,beta); // create Density Matrix
     rho.prepare();
     rho.compute(); // evaluate thermal weights with respect to ground energy, i.e exp(-beta(e-e_0))/Z 
 
-    INFO("<N> = " << rho.getAverageOccupancy()); // get average total particle number
-    INFO("<H> = " << rho.getAverageEnergy()); // get average energy
     ParticleIndex d0 = IndexInfo.getIndex("A",0,down); // find the indices of the impurity, i.e. spin up index
     ParticleIndex u0 = IndexInfo.getIndex("A",0,up);
-    INFO("<N_{" << IndexInfo.getInfo(u0) << "}N_{"<< IndexInfo.getInfo(u0) << "}> = " << rho.getAverageDoubleOccupancy(u0,d0)); // get double occupancy
 
-    for (ParticleIndex i=0; i<IndexInfo.getIndexSize(); i++) {  
-        INFO("<N_{" << IndexInfo.getInfo(i) << "[" << i <<"]}> = " << rho.getAverageOccupancy(i)); // get average total particle number
+    if (!rank) { 
+        // get average total particle number
+        mpi_cout << "<N> = " << rho.getAverageOccupancy() << std::endl; 
+        // get average energy
+        mpi_cout << "<H> = " << rho.getAverageEnergy() << std::endl; 
+        // get double occupancy
+        mpi_cout << "<N_{" << IndexInfo.getInfo(u0) << "}N_{"<< IndexInfo.getInfo(u0) << "}> = " << rho.getAverageDoubleOccupancy(u0,d0) << std::endl; 
+        // get average total particle number per index
+        for (ParticleIndex i=0; i<IndexInfo.getIndexSize(); i++) {  
+            std::cout << "<N_{" << IndexInfo.getInfo(i) << "[" << i <<"]}> = " << rho.getAverageOccupancy(i) << std::endl; 
+            }
+        double n_av = rho.getAverageOccupancy();
+        gftools::num_io<double>(n_av).savetxt("N_T.dat");
         }
-        
-    savetxt("N_T.dat",rho.getAverageOccupancy());
 
     // Green's function calculation starts here
     
@@ -250,13 +238,13 @@ int main(int argc, char* argv[])
 
         G.prepareAll(indices2); // identify all non-vanishing block connections in the Green's function
         G.computeAll(); // Evaluate all GF terms, i.e. resonances and weights of expressions in Lehmans representation of the Green's function
-
+/*
         if (!comm.rank()) // dump gf into a file
         // loops over all components (pairs of indices) of the Green's function 
         for (std::set<IndexCombination2>::const_iterator it = indices2.begin(); it != indices2.end(); ++it) { 
             IndexCombination2 ind2 = *it;
             // Save Matsubara GF from pi/beta to pi/beta*(4*wf_max + 1)
-            std::cout << "Saving imfreq G" << ind2 << " on "<< 4*wf_max << " Matsubara freqs. " << std::endl;
+            mpi_cout << "Saving imfreq G" << ind2 << " on "<< 4*wf_max << " Matsubara freqs. " << std::endl;
             std::ofstream gw_im(("gw_imag"+ boost::lexical_cast<std::string>(ind2.Index1)+ boost::lexical_cast<std::string>(ind2.Index2)+".dat").c_str());
             const GreensFunction & GF = G(ind2);
             for (int wn = 0; wn < wf_max*4; wn++) {
@@ -266,34 +254,44 @@ int main(int argc, char* argv[])
             gw_im.close();
             // Save Retarded GF on the real axis
             std::ofstream gw_re(("gw_real"+boost::lexical_cast<std::string>(ind2.Index1)+boost::lexical_cast<std::string>(ind2.Index2)+".dat").c_str()); 
-            std::cout << "Saving real-freq GF " << ind2 << " in energy space [" << e0-hbw << ":" << e0+hbw << ":" << step << "] + I*" << eta << "." << std::endl;
+            mpi_cout << "Saving real-freq GF " << ind2 << " in energy space [" << e0-hbw << ":" << e0+hbw << ":" << step << "] + I*" << eta << "." << std::endl;
             for (double w = e0-hbw; w < e0+hbw; w+=step) {
                 ComplexType val = GF(ComplexType(w) + I*eta);
                 gw_re << std::scientific << std::setprecision(12) << w << "   " << real(val) << " " << imag(val) << std::endl;
             };
             gw_re.close();
         }
+*/
 
         // Start Two-particle GF calculation
 
         if (calc_2pgf) {   
             print_section("2-Particle Green's function calc");
-            std::set<IndexCombination4> indices4; // a set of four indices to evaluate the 2pgf
+
+            std::vector<size_t> indices_2pgf = p["2pgf.indices"].as<std::vector<size_t> >();
+            if (indices_2pgf.size() != 4) throw std::logic_error("Need 4 indices for 2pgf");
+    
+            // a set of four indices to evaluate the 2pgf
+            IndexCombination4 index_comb(indices_2pgf[0], indices_2pgf[1], indices_2pgf[2], indices_2pgf[3]);
+
+            std::set<IndexCombination4> indices4; 
             // 2PGF = <T c c c^+ c^+>
-            indices4.insert(IndexCombination4(u0,u0,u0,u0)); // register up-up-up-up component for evaluation
-            indices4.insert(IndexCombination4(u0,d0,u0,d0)); // register up-down-up-down component for evaluation
-            //indices4.insert(IndexCombination4(d0,d0,d0,d0));
+            indices4.insert(index_comb);
+            std::string ind_str = boost::lexical_cast<std::string>(index_comb.Index1) 
+                                + boost::lexical_cast<std::string>(index_comb.Index2) 
+                                + boost::lexical_cast<std::string>(index_comb.Index3) 
+                                + boost::lexical_cast<std::string>(index_comb.Index4);
 
             TwoParticleGFContainer Chi4(IndexInfo,S,H,rho,Operators);
             /* Some knobs to make calc faster - the larger the values of tolerances, the faster is calc, but rounding errors may show up. */
             /** A difference in energies with magnitude less than this value is treated as zero - resolution of energy resonances. */
-            Chi4.ReduceResonanceTolerance = reduce_tol;
+            Chi4.ReduceResonanceTolerance = p["2pgf.reduce_tol"].as<double>();
             /** Minimal magnitude of the coefficient of a term to take it into account - resolution of thermal weight. */
-            Chi4.CoefficientTolerance = coeff_tol;
+            Chi4.CoefficientTolerance = p["2pgf.coeff_tol"].as<double>();
             /** Knob that controls the caching frequency. */
-            Chi4.ReduceInvocationThreshold = 1e5;
+            Chi4.ReduceInvocationThreshold = p["2pgf.reduce_freq"].as<size_t>();
             /** Minimal magnitude of the coefficient of a term to take it into account with respect to amount of terms. */
-            Chi4.MultiTermCoefficientTolerance = 1e-6;
+            Chi4.MultiTermCoefficientTolerance = p["2pgf.multiterm_tol"].as<double>();
             
             Chi4.prepareAll(indices4); // find all non-vanishing block connections inside 2pgf
             comm.barrier(); // MPI::BARRIER
@@ -302,107 +300,26 @@ int main(int argc, char* argv[])
             Chi4.computeAll(comm, true); 
 
             // dump 2PGF into files - loop through 2pgf components
-            for (std::set<IndexCombination4>::const_iterator it = indices4.begin(); it != indices4.end(); ++it) { 
-                IndexCombination4 ind = *it;
-                if (!comm.rank()) std::cout << "Saving 2PGF " << ind << std::endl;
-                std::string ind_str = boost::lexical_cast<std::string>(ind.Index1) + boost::lexical_cast<std::string>(ind.Index2) +boost::lexical_cast<std::string>(ind.Index3) +boost::lexical_cast<std::string>(ind.Index4);
-                const TwoParticleGF &chi = Chi4(ind);
+            if (!comm.rank()) mpi_cout << "Saving 2PGF " << index_comb << std::endl;
+            const TwoParticleGF &chi = Chi4(index_comb);
 
-                // Save terms of two particle GF
-                std::ofstream term_res_stream(("terms_res"+ind_str+".pom").c_str());
-                std::ofstream term_nonres_stream(("terms_nonres"+ind_str+".pom").c_str());
-                boost::archive::text_oarchive oa_res(term_res_stream);
-                boost::archive::text_oarchive oa_nonres(term_nonres_stream);
-                for(std::vector<TwoParticleGFPart*>::const_iterator iter = chi.parts.begin(); iter != chi.parts.end(); iter++) {
-                    oa_nonres << ((*iter)->getNonResonantTerms());
-                    oa_res << ((*iter)->getResonantTerms());
-                    };
-
-                // start output of vertex
-
-                // wb_max -  number of non-negative bosonic freqs
-                // wf_max -  number of positive fermionic freqs
-
-                // give 2pgf in bosonic-fermionic-fermionic freq notation
-
-                 { // dispatch and save two-particle GF data - MPI parallelization in bosonic freqs
-
-                    // Master-slave scheme to distribute the bosonic frequencies on different processes
-                    int ROOT = 0;
-                    int ntasks = std::max(2*wb_max-1,0);
-
-                    boost::scoped_ptr<pMPI::MPIMaster> disp;
-
-                    if (comm.rank() == ROOT) { 
-                        DEBUG("Master at " << comm.rank());
-                        disp.reset(new pMPI::MPIMaster(comm,ntasks,true));
-                    };
-                    comm.barrier();
-                    
-                
-                    for (pMPI::MPIWorker worker(comm,ROOT);!worker.is_finished();) {
-                        if (rank == ROOT) disp->order(); 
-                        worker.receive_order(); 
-                        //DEBUG((worker.Status == WorkerTag::Pending));
-                        if (worker.is_working()) { 
-                            // this is what every process executes
-                            pMPI::JobId p = worker.current_job();
-
-                            double W = BMatsubara(job_to_bfreq_index(p, wb_max), beta); // get current bosonic frequency
-                            std::cout << "["<<p+1<<"/" << ntasks << "] p" << comm.rank() << " Omega = " << W << std::endl;
-
-                            std::ofstream chi_stream (("chi"+ind_str+"_W"+boost::lexical_cast<std::string>(W)+".dat").c_str());
-
-                            // Most important part 2 - loop over fermionic frequencies. Consider parallelizing one of the loop
-                            for (int w1_index = -wf_max; w1_index<wf_max; w1_index++) { // loop over first fermionic frequency 
-                                double w1 = FMatsubara(w1_index, beta);        
-                                for (int w2_index = -wf_max; w2_index<wf_max; w2_index++) { // loop over second fermionic
-                                    double w2 = FMatsubara(w2_index, beta);        
-
-                                    ComplexType val = chi_bfreq_f(chi, W, w1, w2);
-
-                                    chi_stream << std::scientific << std::setprecision(12)  
-                                               << w1 << " " << w2 << "   " << std::real(val) << " " << std::imag(val) << std::endl;
-                                }
-                                chi_stream << std::endl;
-                            };
-                            chi_stream.close();
-                            worker.report_job_done(); 
-                            };
-                        if (rank == ROOT) disp->check_workers(); // check if there are free workers 
-                        };
-                    comm.barrier();
-                    //if (comm.rank() == ROOT) { disp.release(); DEBUG("Released master"); };
-                    }
-                }
-            };
-        };
+            // Save terms of two particle GF
+            std::ofstream term_res_stream(("terms_res"+ind_str+".pom").c_str());
+            std::ofstream term_nonres_stream(("terms_nonres"+ind_str+".pom").c_str());
+            boost::archive::text_oarchive oa_res(term_res_stream);
+            boost::archive::text_oarchive oa_nonres(term_nonres_stream);
+            for(std::vector<TwoParticleGFPart*>::const_iterator iter = chi.parts.begin(); iter != chi.parts.end(); iter++) {
+                oa_nonres << ((*iter)->getNonResonantTerms());
+                oa_res << ((*iter)->getResonantTerms());
+                };
+            }
+        }
 }
 
-
-bool compare(ComplexType a, ComplexType b)
+void print_section (const std::string& str, boost::mpi::communicator comm)
 {
-    return abs(a-b) < 1e-5;
+    mpi_cout << std::string(str.size(),'=') << std::endl;
+    mpi_cout << str << std::endl;
+    mpi_cout << std::string(str.size(),'=') << std::endl;
 }
-
-void print_section (const std::string& str)
-{
-    if (!comm.rank()) { 
-        std::cout << std::string(str.size(),'=') << std::endl;
-        std::cout << str << std::endl;
-        std::cout << std::string(str.size(),'=') << std::endl;
-        };
-}
-
-template <typename F1, typename F2>
-bool is_equal ( F1 x, F2 y, RealType tolerance)
-{
-    return (std::abs(x-y)<tolerance);
-}
-
-template <typename T1> void savetxt(std::string fname, T1 in){std::ofstream out(fname.c_str()); out << in << std::endl; out.close();};
-
-struct my_logic_error : public std::logic_error { my_logic_error (const std::string& what_arg):logic_error(what_arg){}; };
-
-
 
