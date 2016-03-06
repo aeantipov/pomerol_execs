@@ -5,10 +5,12 @@ project (pomerol_execs CXX)
 if (${CMAKE_BINARY_DIR} STREQUAL ${CMAKE_SOURCE_DIR})
     message(FATAL_ERROR "In source builds are disabled. Please use a separate build directory.")
 endif()
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR})
-set(CMAKE_DISABLE_SOURCE_CHANGES ON)
-set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
-SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+include(CommonDefs)
+no_source_builds()
+fix_rpath()
+set_cxx11()
 
 # find pomerol
 find_package(pomerol REQUIRED)
