@@ -106,6 +106,7 @@ int main(int argc, char* argv[])
     int verbosity = p["verbosity"];
     int plaintext = p["plaintext"];
     std::string label_2pgf=p["2pgf.label"];
+    std::string top = "";
 
     //int wf_max, wb_max;
     
@@ -214,7 +215,8 @@ int main(int argc, char* argv[])
 
     if (rank == ROOT) { 
         alps::hdf5::archive ar(p["output"].as<std::string>(), "w");
-        gftools::save_grid_object(ar, "/chi" + label_2pgf, output, plaintext > 0);
+        gftools::save_grid_object(ar, top + "/chi" + label_2pgf, output, plaintext > 0);
+        ar[top + "/parameters"] << p;
     }
 }
 
