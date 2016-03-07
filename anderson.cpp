@@ -300,15 +300,28 @@ int main(int argc, char* argv[])
             if (!comm.rank()) mpi_cout << "Saving 2PGF " << index_comb << std::endl;
             const TwoParticleGF &chi = Chi4(index_comb);
 
-            // Save terms of two particle GF
-            std::ofstream term_res_stream(("terms_res"+ind_str+".pom").c_str());
-            std::ofstream term_nonres_stream(("terms_nonres"+ind_str+".pom").c_str());
-            boost::archive::text_oarchive oa_res(term_res_stream);
-            boost::archive::text_oarchive oa_nonres(term_nonres_stream);
-            for(std::vector<TwoParticleGFPart*>::const_iterator iter = chi.parts.begin(); iter != chi.parts.end(); iter++) {
-                oa_nonres << ((*iter)->getNonResonantTerms());
-                oa_res << ((*iter)->getResonantTerms());
-                };
+            if (!rank) { 
+                // First collect all terms
+                std::vector<TwoParticleGFPart::ResonantTerm> terms_res;
+                std::vector<TwoParticleGFPart::NonResonantTerm> terms_nonres;
+
+                for(std::vector<TwoParticleGFPart*>::const_iterator iter = chi.parts.begin(); iter != chi.parts.end(); iter++) {
+                    std::vector<TwoParticleGFPart::ResonantTerm> const& t_res = (*iter)->getResonantTerms();
+                    terms_res.insert(terms_res.end(), t_res.begin(), t_res.end());
+                    std::vector<TwoParticleGFPart::NonResonantTerm> const& t_nonres = (*iter)->getNonResonantTerms();
+                    terms_nonres.insert(terms_nonres.end(), t_nonres.begin(), t_nonres.end());
+                    };
+
+
+                // Save terms of two particle GF
+                std::ofstream term_res_stream(("terms_res"+ind_str+".pom").c_str());
+                std::ofstream term_nonres_stream(("terms_nonres"+ind_str+".pom").c_str());
+                boost::archive::text_oarchive oa_res(term_res_stream);
+                boost::archive::text_oarchive oa_nonres(term_nonres_stream);
+                std::cout << "Rank " << rank << ": saving " << terms_nonres.size() << " + " << terms_res.size() << " terms" << std::endl;
+                oa_nonres << terms_nonres;
+                oa_res << terms_res;
+                }
             }
         }
 }
