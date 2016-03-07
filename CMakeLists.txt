@@ -30,7 +30,7 @@ find_package(GFTools REQUIRED)
 message(STATUS "GFTools includes : ${GFTOOLS_INCLUDE_DIR}")
 include_directories(${GFTOOLS_INCLUDE_DIR})
 
-set (execs anderson)
+set (execs anderson terms2pgf)
 foreach (exec ${execs})
     set (exec_name "${exec}.pomerol")
     add_executable(${exec_name} ${exec}.cpp)
